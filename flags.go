@@ -2,8 +2,8 @@ package flags
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"github.com/bugfixes/go-bugfixes/logs"
 	"net/http"
 	"sync"
 	"time"
@@ -187,20 +187,20 @@ func (c *Client) refreshCache() {
 func (c *Client) fetchFlags() (*ApiResponse, error) {
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/flags", c.baseURL), nil)
 	if err != nil {
-		return nil, err
+		return nil, logs.Errorf("failed to build request %v", err)
 	}
 	req.Header.Set("User-Agent", "Flags-Go")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
 	if c.auth.ProjectID == "" {
-		return nil, errors.New("project ID is required")
+		return nil, logs.Error("project ID is required")
 	}
 	if c.auth.AgentID == "" {
-		return nil, errors.New("agent ID is required")
+		return nil, logs.Error("agent ID is required")
 	}
 	if c.auth.EnvironmentID == "" {
-		return nil, errors.New("environment ID is required")
+		return nil, logs.Error("environment ID is required")
 	}
 
 	req.Header.Set("X-Project-ID", c.auth.ProjectID)
@@ -209,23 +209,23 @@ func (c *Client) fetchFlags() (*ApiResponse, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, logs.Errorf("failed to execute request: %v", err)
 	}
 	defer func() {
 		if resp != nil && resp.Body != nil {
 			if err := resp.Body.Close(); err != nil {
-				fmt.Println("error closing response body:", err)
+				_ = logs.Errorf("error closing response body: %v", err)
 			}
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, logs.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	var apiResp ApiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, err
+		return nil, logs.Errorf("failed to decode body %v", err)
 	}
 	return &apiResp, nil
 }
