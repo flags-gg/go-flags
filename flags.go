@@ -101,8 +101,6 @@ func NewClient(opts ...Option) *Client {
 		}
 		return nil
 	}
-	// Sleep to allow the database to initialize
-	time.Sleep(5 * time.Second)
 
 	client := &Client{
 		baseURL: baseURL,
