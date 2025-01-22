@@ -1,12 +1,16 @@
 package flags
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/bugfixes/go-bugfixes/logs"
 	"net/http"
 	"sync"
 	"time"
+
+	_ "github.com/ncruces/go-sqlite3"
 )
 
 const (
@@ -28,17 +32,11 @@ type Flag struct {
 type Client struct {
 	baseURL      string
 	httpClient   *http.Client
-	cache        *Cache
 	maxRetries   int
 	mutex        *sync.RWMutex
 	circuitState CircuitState
 	auth         Auth
-}
-
-type Cache struct {
-	flags           map[string]bool
-	nextRefreshTime time.Time
-	mutex           sync.RWMutex
+	db           *sql.DB
 }
 
 type CircuitState struct {
@@ -66,15 +64,24 @@ type FeatureFlag struct {
 
 type Option func(*Client)
 
-func NewClient(opts ...Option) *Client {
+func NewClient(opts ...Option) (*Client, error) {
+	db, err := sql.Open("sqlite3", "/tmp/flags.db")
+	if err != nil {
+		return nil, logs.Errorf("failed to open database: %v", err)
+	}
+	if err := initDB(db); err != nil {
+		defer func() {
+			if err := db.Close(); err != nil {
+				_ = logs.Errorf("failed to close database: %v", err)
+			}
+		}()
+		return nil, logs.Errorf("failed to initialize database: %v", err)
+	}
+
 	client := &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
-		},
-		cache: &Cache{
-			flags:           make(map[string]bool),
-			nextRefreshTime: time.Now(),
 		},
 		maxRetries: maxRetries,
 	}
@@ -82,7 +89,7 @@ func NewClient(opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(client)
 	}
-	return client
+	return client, nil
 }
 
 func WithBaseURL(baseURL string) Option {
@@ -99,6 +106,28 @@ func WithAuth(auth Auth) Option {
 	return func(c *Client) {
 		c.auth = auth
 	}
+}
+
+func initDB(db *sql.DB) error {
+	_, err := db.Exec(`
+    CREATE TABLE IF NOT EXISTS flags (
+        name TEXT PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    )`)
+	if err != nil {
+		return logs.Errorf("failed to create flags table: %v", err)
+	}
+
+	_, err = db.Exec(`
+	CREATE TABLE IF NOT EXISTS cache_metadata (
+		key TEXT PRIMARY KEY,
+		value TEXT,
+	)`)
+	if err != nil {
+		return logs.Errorf("failed to create cache_metadata table: %v", err)
+	}
+	return nil
 }
 
 func (c *Client) Is(name string) *Flag {
@@ -125,16 +154,29 @@ func (c *Client) isEnabled(name string) bool {
 }
 
 func (c *Client) shouldRefreshCache() bool {
-	c.cache.mutex.RLock()
-	defer c.cache.mutex.RUnlock()
-	return time.Now().After(c.cache.nextRefreshTime)
+	var nextRefreshTime time.Time
+	if err := c.db.QueryRow(`SELECT value FROM cache_metadata WHERE key = 'next_refresh_time'`).Scan(&nextRefreshTime); err != nil {
+		return true
+	}
+
+	refreshTime, err := time.Parse(time.RFC3339, nextRefreshTime.String())
+	if err != nil {
+		return true
+	}
+
+	return time.Now().After(refreshTime)
 }
 
 func (c *Client) checkCache(name string) (bool, bool) {
-	c.cache.mutex.RLock()
-	defer c.cache.mutex.RUnlock()
-	enabled, exists := c.cache.flags[name]
-	return enabled, exists
+	var enabled bool
+	if err := c.db.QueryRow(`SELECT enabled FROM flags WHERE name = $1`, name).Scan(&enabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, false
+		}
+		return false, true
+	}
+
+	return enabled, true
 }
 
 func (c *Client) refreshCache() {
@@ -165,23 +207,48 @@ func (c *Client) refreshCache() {
 		time.Sleep(time.Duration(retry+1) * time.Second)
 	}
 
+	if err != nil || apiResp == nil {
+		return
+	}
+
+	tx, err := c.db.Begin()
 	if err != nil {
 		return
 	}
+	defer func() {
+		if err := tx.Rollback(); err != nil {
+			_ = logs.Errorf("failed to rollback transaction: %v", err)
+		}
+	}()
 
-	c.cache.mutex.Lock()
-	defer c.cache.mutex.Unlock()
-
-	newFlags := make(map[string]bool)
-	if apiResp == nil {
+	if _, err := tx.Exec(`DELETE FROM flags`); err != nil {
 		return
 	}
+
+	stmt, err := tx.Prepare(`INSERT INTO flags (name, enabled, updated_at) VALUES ($1, $2, $3)`)
+	if err != nil {
+		return
+	}
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			_ = logs.Errorf("failed to close statement: %v", err)
+		}
+	}()
+	now := time.Now()
 	for _, flag := range apiResp.Flags {
-		newFlags[flag.Details.Name] = flag.Enabled
+		if _, err := stmt.Exec(flag.Details.Name, flag.Enabled, now); err != nil {
+			return
+		}
 	}
 
-	c.cache.flags = newFlags
-	c.cache.nextRefreshTime = time.Now().Add(time.Duration(apiResp.IntervalAllowed) * time.Second)
+	nextRefreshTime := time.Now().Add(time.Duration(apiResp.IntervalAllowed) * time.Second)
+	if _, err := tx.Exec(`INSERT INTO cache_metadata (key, value) VALUES ('next_refresh_time', $1)`, nextRefreshTime.Format(time.RFC3339)); err != nil {
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		return
+	}
 }
 
 func (c *Client) fetchFlags() (*ApiResponse, error) {
@@ -194,13 +261,13 @@ func (c *Client) fetchFlags() (*ApiResponse, error) {
 	req.Header.Set("Content-Type", "application/json")
 
 	if c.auth.ProjectID == "" {
-		return nil, errors.New("project ID is required")
+		return nil, logs.Error("project ID is required")
 	}
 	if c.auth.AgentID == "" {
-		return nil, errors.New("agent ID is required")
+		return nil, logs.Error("agent ID is required")
 	}
 	if c.auth.EnvironmentID == "" {
-		return nil, errors.New("environment ID is required")
+		return nil, logs.Error("environment ID is required")
 	}
 
 	req.Header.Set("X-Project-ID", c.auth.ProjectID)
@@ -209,23 +276,23 @@ func (c *Client) fetchFlags() (*ApiResponse, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, logs.Errorf("failed to make request: %v", err)
 	}
 	defer func() {
 		if resp != nil && resp.Body != nil {
 			if err := resp.Body.Close(); err != nil {
-				fmt.Println("error closing response body:", err)
+				_ = logs.Errorf("failed to close response body: %v", err)
 			}
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, logs.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	var apiResp ApiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, err
+		return nil, logs.Errorf("failed to decode response: %v", err)
 	}
 	return &apiResp, nil
 }
