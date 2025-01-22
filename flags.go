@@ -2,6 +2,7 @@ package flags
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -12,6 +13,12 @@ const (
 	baseURL    = "https://api.flags.gg/v1"
 	maxRetries = 3
 )
+
+type Auth struct {
+	ProjectID     string
+	AgentID       string
+	EnvironmentID string
+}
 
 type Flag struct {
 	Name   string
@@ -25,6 +32,7 @@ type Client struct {
 	maxRetries   int
 	mutex        *sync.RWMutex
 	circuitState CircuitState
+	auth         Auth
 }
 
 type Cache struct {
@@ -85,6 +93,11 @@ func WithBaseURL(baseURL string) Option {
 func WithMaxRetries(maxRetries int) Option {
 	return func(c *Client) {
 		c.maxRetries = maxRetries
+	}
+}
+func WithAuth(auth Auth) Option {
+	return func(c *Client) {
+		c.auth = auth
 	}
 }
 
@@ -172,7 +185,29 @@ func (c *Client) refreshCache() {
 }
 
 func (c *Client) fetchFlags() (*ApiResponse, error) {
-	resp, err := c.httpClient.Get(c.baseURL)
+	req, err := http.NewRequest("GET", c.baseURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Flags-Go")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	if c.auth.ProjectID == "" {
+		return nil, errors.New("project ID is required")
+	}
+	if c.auth.AgentID == "" {
+		return nil, errors.New("agent ID is required")
+	}
+	if c.auth.EnvironmentID == "" {
+		return nil, errors.New("environment ID is required")
+	}
+
+	req.Header.Set("X-Project-ID", c.auth.ProjectID)
+	req.Header.Set("X-Agent-ID", c.auth.AgentID)
+	req.Header.Set("X-Environment-ID", c.auth.EnvironmentID)
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
