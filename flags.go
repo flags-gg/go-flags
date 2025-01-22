@@ -185,7 +185,7 @@ func (c *Client) refreshCache() {
 }
 
 func (c *Client) fetchFlags() (*ApiResponse, error) {
-	req, err := http.NewRequest("GET", c.baseURL, nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/flags", c.baseURL), nil)
 	if err != nil {
 		return nil, err
 	}
