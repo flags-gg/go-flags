@@ -27,6 +27,11 @@ func TestNewClientWithOptions(t *testing.T) {
 	client := NewClient(
 		WithBaseURL(customURL),
 		WithMaxRetries(customRetries),
+		WithAuth(Auth{
+			ProjectID:     "test-project",
+			AgentID:       "test-agent",
+			EnvironmentID: "test-environment",
+		}),
 	)
 
 	if client.baseURL != customURL {
@@ -53,7 +58,11 @@ func TestFeatureFlags(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(WithBaseURL(server.URL))
+	client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
+		ProjectID:     "test-project",
+		AgentID:       "test-agent",
+		EnvironmentID: "test-environment",
+	}))
 
 	tests := []struct {
 		name     string
@@ -101,7 +110,11 @@ func TestCaching(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(WithBaseURL(server.URL))
+	client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
+		ProjectID:     "test-project",
+		AgentID:       "test-agent",
+		EnvironmentID: "test-environment",
+	}))
 
 	// First call should hit the server
 	client.Is("test-flag").Enabled()
@@ -136,6 +149,11 @@ func TestCircuitBreaker(t *testing.T) {
 	client := NewClient(
 		WithBaseURL(server.URL),
 		WithMaxRetries(3),
+		WithAuth(Auth{
+			ProjectID:     "test-project",
+			AgentID:       "test-agent",
+			EnvironmentID: "test-environment",
+		}),
 	)
 
 	// First attempt should trigger circuit breaker
@@ -196,7 +214,11 @@ func TestErrorHandling(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClient(WithBaseURL(server.URL))
+			client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
+				ProjectID:     "test-project",
+				AgentID:       "test-agent",
+				EnvironmentID: "test-environment",
+			}))
 			if tt.name == "network timeout" {
 				client.httpClient.Timeout = 1 * time.Second
 			}
@@ -222,7 +244,11 @@ func TestConcurrentAccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(WithBaseURL(server.URL))
+	client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
+		ProjectID:     "test-project",
+		AgentID:       "test-agent",
+		EnvironmentID: "test-environment",
+	}))
 
 	// Run concurrent flag checks
 	concurrentRequests := 10
