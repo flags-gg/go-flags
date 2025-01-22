@@ -36,11 +36,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: 'Qodana Scan'
-        uses: JetBrains/qodana-action@v2023.3.2
+        uses: JetBrains/qodana-action@v2024.3
         with:
           upload-result: true
         env:
-          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN }}
+          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_1031901934 }}
   auto-merge:
     runs-on: ubuntu-latest
     permissions:
