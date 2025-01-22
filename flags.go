@@ -160,6 +160,9 @@ func (c *Client) refreshCache() {
 	defer c.cache.mutex.Unlock()
 
 	newFlags := make(map[string]bool)
+	if apiResp == nil {
+		return
+	}
 	for _, flag := range apiResp.Flags {
 		newFlags[flag.Details.Name] = flag.Enabled
 	}
@@ -173,7 +176,13 @@ func (c *Client) fetchFlags() (*ApiResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			if err := resp.Body.Close(); err != nil {
+				fmt.Println("error closing response body:", err)
+			}
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
