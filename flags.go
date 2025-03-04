@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	baseURL    = "https://api.flags.gg/v1"
+	baseURL    = "https://api.flags.gg"
 	maxRetries = 3
 )
 
