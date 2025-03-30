@@ -4,14 +4,23 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"github.com/bugfixes/go-bugfixes/logs"
 	"github.com/flags-gg/go-flags/flag"
 	_ "modernc.org/sqlite"
 	"time"
 )
 
-func getDBClient(db *sql.DB) (*sql.DB, error) {
+func getDBClient(db *sql.DB, fileName *string) (*sql.DB, error) {
 	if db != nil {
+		return db, nil
+	}
+
+	if fileName != nil {
+		db, err := sql.Open("sqlite", fmt.Sprintf("%s?_pragma=busy_timeout=1000&pragma=journal_mode=WAL", *fileName))
+		if err != nil {
+			return nil, logs.Errorf("failed to open database: %v", err)
+		}
 		return db, nil
 	}
 
@@ -25,18 +34,13 @@ func getDBClient(db *sql.DB) (*sql.DB, error) {
 type System struct {
 	Context context.Context
 
-	DB *sql.DB
+	FileName *string
+	DB       *sql.DB
 }
 
 func NewSystem() *System {
-	db, err := getDBClient(nil)
-	if err != nil {
-		return nil
-	}
-
 	return &System{
 		Context: context.Background(),
-		DB:      db,
 	}
 }
 
@@ -44,24 +48,22 @@ func (s *System) SetContext(ctx context.Context) {
 	s.Context = ctx
 }
 
+func (s *System) SetFileName(fileName *string) {
+	s.FileName = fileName
+}
+
 func (s *System) InitDB() error {
-	db, err := getDBClient(s.DB)
+	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return logs.Errorf("failed to get database client: %v", err)
 	}
-
-	//defer func() {
-	//	if err := db.Close(); err != nil {
-	//		_ = logs.Errorf("failed to close database: %v", err)
-	//	}
-	//}()
+	s.DB = db
 
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		_ = logs.Errorf("failed to enable foreign keys: %v", err)
-		//if err := db.Close(); err != nil {
-		//	_ = logs.Errorf("failed to close database: %v", err)
-		//}
-		return nil
+		if err := db.Close(); err != nil {
+			return logs.Errorf("failed to close database: %v", err)
+		}
+		return logs.Errorf("failed to enable foreign keys: %v", err)
 	}
 
 	tx, err := db.Begin()
@@ -101,16 +103,11 @@ func (s *System) InitDB() error {
 }
 
 func (s *System) deleteAllFlags() error {
-	db, err := getDBClient(s.DB)
+	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return logs.Errorf("failed to get database client: %v", err)
 	}
-
-	//defer func() {
-	//	if err := db.Close(); err != nil {
-	//		_ = logs.Errorf("failed to close database: %v", err)
-	//	}
-	//}()
+	s.DB = db
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -135,16 +132,11 @@ func (s *System) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
 		return err
 	}
 
-	db, err := getDBClient(s.DB)
+	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return logs.Errorf("failed to get database client: %v", err)
 	}
-
-	//defer func() {
-	//	if err := db.Close(); err != nil {
-	//		_ = logs.Errorf("failed to close database: %v", err)
-	//	}
-	//}()
+	s.DB = db
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -155,11 +147,6 @@ func (s *System) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
 		return logs.Errorf("failed to prepare statement: %v", err)
 
 	}
-	defer func() {
-		if err := stmt.Close(); err != nil {
-			_ = logs.Errorf("failed to close statement: %v", err)
-		}
-	}()
 
 	now := time.Now().Unix()
 	for _, f := range flags {
@@ -179,16 +166,11 @@ func (s *System) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
 }
 
 func (s *System) ShouldRefreshCache() bool {
-	db, err := getDBClient(s.DB)
+	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return true
 	}
-
-	//defer func() {
-	//	if err := db.Close(); err != nil {
-	//		_ = logs.Errorf("failed to close database: %v", err)
-	//	}
-	//}()
+	s.DB = db
 
 	var nextRefreshTime int64
 	if err := db.QueryRow(`SELECT CAST(value AS INTEGER) FROM cache_metadata WHERE key = 'next_refresh_time'`).Scan(&nextRefreshTime); err != nil {
@@ -199,16 +181,11 @@ func (s *System) ShouldRefreshCache() bool {
 }
 
 func (s *System) Get(name string) (bool, bool) {
-	db, err := getDBClient(s.DB)
+	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return false, false
 	}
-
-	//defer func() {
-	//	if err := db.Close(); err != nil {
-	//		_ = logs.Errorf("failed to close database: %v", err)
-	//	}
-	//}()
+	s.DB = db
 
 	var enabled bool
 	if err := db.QueryRow(`SELECT enabled FROM flags WHERE name = $1 AND updated_at > (SELECT CAST(value AS INTEGER) FROM cache_metadata WHERE key = 'cache_ttl')`, name).Scan(&enabled); err != nil {
@@ -221,10 +198,11 @@ func (s *System) Get(name string) (bool, bool) {
 }
 
 func (s *System) GetAll() ([]flag.FeatureFlag, error) {
-	db, err := getDBClient(s.DB)
+	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return nil, logs.Errorf("failed to get database client: %v", err)
 	}
+	s.DB = db
 
 	defer func() {
 		if err := db.Close(); err != nil {
