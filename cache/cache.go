@@ -162,8 +162,8 @@ func (s *System) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
 	}()
 
 	now := time.Now().Unix()
-	for _, flag := range flags {
-		if _, err := stmt.Exec(flag.Details.Name, flag.Enabled, now); err != nil {
+	for _, f := range flags {
+		if _, err := stmt.Exec(f.Details.Name, f.Enabled, now); err != nil {
 			return logs.Errorf("failed to insert flag: %v", err)
 		}
 	}
