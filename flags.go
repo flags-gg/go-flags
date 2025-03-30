@@ -103,7 +103,7 @@ func (c *Client) Is(name string) *Flag {
 	}
 }
 
-// get all flags
+// List get all flags rather than just the one for the flag itself
 func (c *Client) List() ([]flag.FeatureFlag, error) {
 	flags, err := c.Cache.GetAll()
 	if err != nil {
@@ -113,7 +113,7 @@ func (c *Client) List() ([]flag.FeatureFlag, error) {
 	return flags, nil
 }
 
-// flag specific enabled
+// Enabled flag specific
 func (f *Flag) Enabled() bool {
 	return f.Client.isEnabled(f.Name)
 }
