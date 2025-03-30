@@ -54,11 +54,6 @@ type Option func(*Client)
 
 func NewClient(opts ...Option) *Client {
 	c := cache.NewSystem()
-	c.SetContext(context.Background())
-	if err := c.InitDB(); err != nil {
-		_ = logs.Errorf("failed to initialize database: %v", err)
-		return nil
-	}
 
 	client := &Client{
 		baseURL: baseURL,
@@ -77,6 +72,12 @@ func NewClient(opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(client)
 	}
+	c.SetContext(context.Background())
+	if err := c.InitDB(); err != nil {
+		_ = logs.Errorf("failed to initialize database: %v", err)
+		return nil
+	}
+
 	return client
 }
 
@@ -93,6 +94,11 @@ func WithMaxRetries(maxRetries int) Option {
 func WithAuth(auth Auth) Option {
 	return func(c *Client) {
 		c.auth = auth
+	}
+}
+func SetFileName(fileName *string) Option {
+	return func(c *Client) {
+		c.Cache.SetFileName(fileName)
 	}
 }
 
@@ -244,12 +250,12 @@ func buildLocal() map[string]bool {
 		col[colKey] = val == "true"
 
 		// replace _ with -
-		colKey = strings.ReplaceAll(colKey, "_", "-")
-		col[colKey] = val == "true"
+		colKeyUnderscore := strings.ReplaceAll(colKey, "_", "-")
+		col[colKeyUnderscore] = val == "true"
 
 		// replace _ with <space>
-		colKey = strings.ReplaceAll(colKey, "_", " ")
-		col[colKey] = val == "true"
+		colKeySpace := strings.ReplaceAll(colKey, "_", " ")
+		col[colKeySpace] = val == "true"
 	}
 
 	return col

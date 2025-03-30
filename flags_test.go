@@ -10,7 +10,8 @@ import (
 )
 
 func TestClient_Is(t *testing.T) {
-	client := NewClient()
+	filename := "/tmp/flags_test.db"
+	client := NewClient(SetFileName(&filename))
 	flag := client.Is("test-flag")
 
 	if flag.Name != "test-flag" {
@@ -25,6 +26,7 @@ func TestNewClientWithOptions(t *testing.T) {
 	customURL := "https://custom.flags.gg"
 	customRetries := 5
 
+	filename := "/tmp/flags_test.db"
 	client := NewClient(
 		WithBaseURL(customURL),
 		WithMaxRetries(customRetries),
@@ -33,6 +35,7 @@ func TestNewClientWithOptions(t *testing.T) {
 			AgentID:       "test-agent",
 			EnvironmentID: "test-environment",
 		}),
+		SetFileName(&filename),
 	)
 
 	if client.baseURL != customURL {
@@ -59,11 +62,12 @@ func TestFeatureFlags(t *testing.T) {
 	}))
 	defer server.Close()
 
+	filename := "/tmp/flags_test.db"
 	client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
 		ProjectID:     "test-project",
 		AgentID:       "test-agent",
 		EnvironmentID: "test-environment",
-	}))
+	}), SetFileName(&filename))
 
 	tests := []struct {
 		name     string
@@ -115,11 +119,12 @@ func TestLocalFeatureFlags(t *testing.T) {
 	}))
 	defer server.Close()
 
+	filename := "/tmp/flags_test.db"
 	client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
 		ProjectID:     "test-project",
 		AgentID:       "test-agent",
 		EnvironmentID: "test-environment",
-	}))
+	}), SetFileName(&filename))
 
 	// set the local flag to false
 	if err := os.Setenv("FLAGS_LOCAL_FLAG", "false"); err != nil {
@@ -128,6 +133,10 @@ func TestLocalFeatureFlags(t *testing.T) {
 
 	// set the local override flag to true
 	if err := os.Setenv("FLAGS_LOCAL_OVERRIDE_FLAG", "true"); err != nil {
+		t.Error(err)
+	}
+
+	if err := os.Setenv("FLAGS_LOCAL_SPACE_FLAG", "true"); err != nil {
 		t.Error(err)
 	}
 
@@ -159,6 +168,11 @@ func TestLocalFeatureFlags(t *testing.T) {
 		{
 			name:     "local override flag returns true",
 			flagName: "local-override-flag",
+			want:     true,
+		},
+		{
+			name:     "local space flag returns true",
+			flagName: "local space flag",
 			want:     true,
 		},
 	}
@@ -207,11 +221,12 @@ func TestErrorHandling(t *testing.T) {
 			}))
 			defer server.Close()
 
+			filename := "/tmp/flags_test.db"
 			client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
 				ProjectID:     "test-project",
 				AgentID:       "test-agent",
 				EnvironmentID: "test-environment",
-			}))
+			}), SetFileName(&filename))
 			if tt.name == "network timeout" {
 				client.httpClient.Timeout = 1 * time.Second
 			}
@@ -237,11 +252,12 @@ func TestConcurrentAccess(t *testing.T) {
 	}))
 	defer server.Close()
 
+	filename := "/tmp/flags_test.db"
 	client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
 		ProjectID:     "test-project",
 		AgentID:       "test-agent",
 		EnvironmentID: "test-environment",
-	}))
+	}), SetFileName(&filename))
 
 	// Run concurrent flag checks
 	concurrentRequests := 10
