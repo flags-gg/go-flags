@@ -247,6 +247,9 @@ func buildLocal() map[string]bool {
 		colKey = strings.ReplaceAll(colKey, "_", "-")
 		col[colKey] = val == "true"
 
+		// replace _ with <space>
+		colKey = strings.ReplaceAll(colKey, "_", " ")
+		col[colKey] = val == "true"
 	}
 
 	return col
