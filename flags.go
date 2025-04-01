@@ -54,6 +54,7 @@ type Option func(*Client)
 
 func NewClient(opts ...Option) *Client {
 	c := cache.NewSystem()
+	c.SetContext(context.Background())
 
 	client := &Client{
 		baseURL: baseURL,
@@ -72,8 +73,11 @@ func NewClient(opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(client)
 	}
-	c.SetContext(context.Background())
-	if err := c.InitDB(); err != nil {
+	if !c.IsMemory {
+		c.CacheSystem = cache.NewSQLLite(c.FileName)
+	}
+
+	if err := c.CacheSystem.Init(); err != nil {
 		_ = logs.Errorf("failed to initialize database: %v", err)
 		return nil
 	}
@@ -101,6 +105,11 @@ func SetFileName(fileName *string) Option {
 		c.Cache.SetFileName(fileName)
 	}
 }
+func WithMemory() Option {
+	return func(c *Client) {
+		c.Cache.NewMemory()
+	}
+}
 
 func (c *Client) Is(name string) *Flag {
 	return &Flag{
@@ -111,7 +120,7 @@ func (c *Client) Is(name string) *Flag {
 
 // List get all flags rather than just the one for the flag itself
 func (c *Client) List() ([]flag.FeatureFlag, error) {
-	flags, err := c.Cache.GetAll()
+	flags, err := c.Cache.CacheSystem.GetAll()
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +134,9 @@ func (f *Flag) Enabled() bool {
 }
 
 func (c *Client) isEnabled(name string) bool {
-	if c.Cache.ShouldRefreshCache() {
+	name = strings.ToLower(name) // force to lowercase
+
+	if c.Cache.CacheSystem.ShouldRefreshCache() {
 		if err := c.refetch(); err != nil {
 			_ = logs.Errorf("failed to refetch flags: %v", err)
 			return false
@@ -141,7 +152,7 @@ func (c *Client) isEnabled(name string) bool {
 	}
 
 	// check cache
-	enabled, exists := c.Cache.Get(name)
+	enabled, exists := c.Cache.CacheSystem.Get(name)
 	if !exists {
 		return false
 	}
@@ -226,7 +237,19 @@ func (c *Client) refetch() error {
 		return logs.Errorf("failed to fetch flags: %v", err)
 	}
 
-	if err := c.Cache.Refresh(apiResp.Flags, apiResp.IntervalAllowed); err != nil {
+	var flags []flag.FeatureFlag
+	for _, f := range apiResp.Flags {
+		ff := flag.FeatureFlag{
+			Enabled: f.Enabled,
+			Details: flag.Details{
+				Name: strings.ToLower(f.Details.Name),
+				ID:   f.Details.ID,
+			},
+		}
+		flags = append(flags, ff)
+	}
+
+	if err := c.Cache.CacheSystem.Refresh(flags, apiResp.IntervalAllowed); err != nil {
 		return logs.Errorf("failed to set cache: %v", err)
 	}
 
@@ -234,7 +257,7 @@ func (c *Client) refetch() error {
 }
 
 func buildLocal() map[string]bool {
-	col := make(map[string]bool)
+	col := make(map[string]bool, len(os.Environ()))
 	for _, e := range os.Environ() {
 		pair := strings.SplitN(e, "=", 2)
 		if len(pair) != 2 {
@@ -246,16 +269,12 @@ func buildLocal() map[string]bool {
 			continue
 		}
 
+		value := val == "true"
+
 		colKey := strings.ToLower(strings.TrimPrefix(key, "FLAGS_"))
-		col[colKey] = val == "true"
-
-		// replace _ with -
-		colKeyUnderscore := strings.ReplaceAll(colKey, "_", "-")
-		col[colKeyUnderscore] = val == "true"
-
-		// replace _ with <space>
-		colKeySpace := strings.ReplaceAll(colKey, "_", " ")
-		col[colKeySpace] = val == "true"
+		col[colKey] = value
+		col[strings.ReplaceAll(colKey, "_", "-")] = value
+		col[strings.ReplaceAll(colKey, "_", " ")] = value
 	}
 
 	return col

@@ -278,3 +278,42 @@ func TestConcurrentAccess(t *testing.T) {
 		}
 	}
 }
+
+func TestClient_IsMemory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := `{
+			"intervalAllowed": 60,
+			"secretMenu": {"sequence": ["b"]},
+			"flags": [{"enabled": true, "details": {"name": "test-flag", "id": "1"}}]
+		}`
+		time.Sleep(100 * time.Millisecond) // Add some delay to increase chance of race conditions
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintln(w, response)
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
+		ProjectID:     "test-project",
+		AgentID:       "test-agent",
+		EnvironmentID: "test-environment",
+	}), WithMemory())
+
+	// Run concurrent flag checks
+	concurrentRequests := 10
+	done := make(chan bool)
+	for i := 0; i < concurrentRequests; i++ {
+		go func() {
+			client.Is("test-flag").Enabled()
+			done <- true
+		}()
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < concurrentRequests; i++ {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Timeout waiting for concurrent requests")
+		}
+	}
+}
