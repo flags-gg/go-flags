@@ -179,8 +179,10 @@ func (s *SQLLite) GetAll() ([]flag.FeatureFlag, error) {
 }
 
 func (s *SQLLite) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
-	if err := s.deleteAllFlags(); err != nil {
-		return err
+	if len(flags) >= 1 { // only delete all flags if there are new flags
+		if err := s.deleteAllFlags(); err != nil {
+			return err
+		}
 	}
 
 	db, err := getDBClient(s.DB, s.FileName)
