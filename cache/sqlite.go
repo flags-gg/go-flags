@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -31,28 +30,21 @@ func getDBClient(db *sql.DB, fileName *string) (*sql.DB, error) {
 	return db, nil
 }
 
-type System struct {
-	Context context.Context
+type SQLLite struct {
+	Flags []flag.FeatureFlag
 
 	FileName *string
 	DB       *sql.DB
 }
 
-func NewSystem() *System {
-	return &System{
-		Context: context.Background(),
+func NewSQLLite(filename *string) *SQLLite {
+	return &SQLLite{
+		Flags:    []flag.FeatureFlag{},
+		FileName: filename,
 	}
 }
 
-func (s *System) SetContext(ctx context.Context) {
-	s.Context = ctx
-}
-
-func (s *System) SetFileName(fileName *string) {
-	s.FileName = fileName
-}
-
-func (s *System) InitDB() error {
+func (s *SQLLite) Init() error {
 	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return logs.Errorf("failed to get database client: %v", err)
@@ -102,7 +94,7 @@ func (s *System) InitDB() error {
 	return tx.Commit()
 }
 
-func (s *System) deleteAllFlags() error {
+func (s *SQLLite) deleteAllFlags() error {
 	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return logs.Errorf("failed to get database client: %v", err)
@@ -127,60 +119,7 @@ func (s *System) deleteAllFlags() error {
 	return tx.Commit()
 }
 
-func (s *System) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
-	if err := s.deleteAllFlags(); err != nil {
-		return err
-	}
-
-	db, err := getDBClient(s.DB, s.FileName)
-	if err != nil {
-		return logs.Errorf("failed to get database client: %v", err)
-	}
-	s.DB = db
-
-	tx, err := db.Begin()
-	if err != nil {
-		return logs.Errorf("failed to begin transaction: %v", err)
-	}
-	stmt, err := tx.Prepare(`INSERT INTO flags (name, enabled, updated_at) VALUES ($1, $2, $3)`)
-	if err != nil {
-		return logs.Errorf("failed to prepare statement: %v", err)
-
-	}
-
-	now := time.Now().Unix()
-	for _, f := range flags {
-		if _, err := stmt.Exec(f.Details.Name, f.Enabled, now); err != nil {
-			return logs.Errorf("failed to insert flag: %v", err)
-		}
-	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO cache_metadata(key, value) VALUES('next_refresh_time', ?), ('cache_ttl', ?)`, time.Now().Add(time.Duration(intervalAllowed)*time.Second).Unix(), intervalAllowed); err != nil {
-		return logs.Errorf("failed to insert cache metadata: %v", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return logs.Errorf("failed to commit transaction: %v", err)
-	}
-
-	return nil
-}
-
-func (s *System) ShouldRefreshCache() bool {
-	db, err := getDBClient(s.DB, s.FileName)
-	if err != nil {
-		return true
-	}
-	s.DB = db
-
-	var nextRefreshTime int64
-	if err := db.QueryRow(`SELECT CAST(value AS INTEGER) FROM cache_metadata WHERE key = 'next_refresh_time'`).Scan(&nextRefreshTime); err != nil {
-		return true
-	}
-
-	return time.Now().Unix() > nextRefreshTime
-}
-
-func (s *System) Get(name string) (bool, bool) {
+func (s *SQLLite) Get(name string) (bool, bool) {
 	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return false, false
@@ -197,7 +136,7 @@ func (s *System) Get(name string) (bool, bool) {
 	return enabled, true
 }
 
-func (s *System) GetAll() ([]flag.FeatureFlag, error) {
+func (s *SQLLite) GetAll() ([]flag.FeatureFlag, error) {
 	db, err := getDBClient(s.DB, s.FileName)
 	if err != nil {
 		return nil, logs.Errorf("failed to get database client: %v", err)
@@ -237,4 +176,57 @@ func (s *System) GetAll() ([]flag.FeatureFlag, error) {
 	}
 
 	return flags, nil
+}
+
+func (s *SQLLite) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
+	if err := s.deleteAllFlags(); err != nil {
+		return err
+	}
+
+	db, err := getDBClient(s.DB, s.FileName)
+	if err != nil {
+		return logs.Errorf("failed to get database client: %v", err)
+	}
+	s.DB = db
+
+	tx, err := db.Begin()
+	if err != nil {
+		return logs.Errorf("failed to begin transaction: %v", err)
+	}
+	stmt, err := tx.Prepare(`INSERT INTO flags (name, enabled, updated_at) VALUES ($1, $2, $3)`)
+	if err != nil {
+		return logs.Errorf("failed to prepare statement: %v", err)
+
+	}
+
+	now := time.Now().Unix()
+	for _, f := range flags {
+		if _, err := stmt.Exec(f.Details.Name, f.Enabled, now); err != nil {
+			return logs.Errorf("failed to insert flag: %v", err)
+		}
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO cache_metadata(key, value) VALUES('next_refresh_time', ?), ('cache_ttl', ?)`, time.Now().Add(time.Duration(intervalAllowed)*time.Second).Unix(), intervalAllowed); err != nil {
+		return logs.Errorf("failed to insert cache metadata: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return logs.Errorf("failed to commit transaction: %v", err)
+	}
+
+	return nil
+}
+
+func (s *SQLLite) ShouldRefreshCache() bool {
+	db, err := getDBClient(s.DB, s.FileName)
+	if err != nil {
+		return true
+	}
+	s.DB = db
+
+	var nextRefreshTime int64
+	if err := db.QueryRow(`SELECT CAST(value AS INTEGER) FROM cache_metadata WHERE key = 'next_refresh_time'`).Scan(&nextRefreshTime); err != nil {
+		return true
+	}
+
+	return time.Now().Unix() > nextRefreshTime
 }
