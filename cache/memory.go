@@ -47,7 +47,7 @@ func (m *Memory) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
 
 	m.Flags = sync.Map{}
 	for _, f := range flags {
-		m.Flags.Store(f.Details.Name, f.Enabled)
+		m.Flags.Store(f.Details.Name, f)
 	}
 	m.cacheTTL = int64(intervalAllowed)
 	m.nextRefresh = time.Now().Add(time.Duration(m.cacheTTL) * time.Second).Unix()
@@ -63,7 +63,7 @@ func (m *Memory) ShouldRefreshCache() bool {
 
 func (m *Memory) Init() error {
 	m.cacheTTL = 60
-	m.nextRefresh = time.Now().Add(time.Duration(m.cacheTTL) * time.Second).Unix()
+	m.nextRefresh = time.Now().Add(time.Duration(-90) * time.Second).Unix()
 	return nil
 }
 
