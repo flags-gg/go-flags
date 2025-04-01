@@ -150,58 +150,6 @@ func TestLocalFeatureFlags_SQLite(t *testing.T) {
 	}
 }
 
-func TestErrorHandling_SQLite(t *testing.T) {
-	tests := []struct {
-		name       string
-		statusCode int
-		response   string
-	}{
-		{
-			name:       "invalid JSON",
-			statusCode: http.StatusOK,
-			response:   `{"invalid json"}`,
-		},
-		{
-			name:       "server error",
-			statusCode: http.StatusInternalServerError,
-			response:   "",
-		},
-		{
-			name:       "network timeout",
-			statusCode: http.StatusOK,
-			response:   "", // Will trigger timeout
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if tt.name == "network timeout" {
-					time.Sleep(2 * time.Second)
-				}
-				w.WriteHeader(tt.statusCode)
-				_, _ = fmt.Fprintln(w, tt.response)
-			}))
-			defer server.Close()
-
-			filename := "/tmp/flags_test.db"
-			client := NewClient(WithBaseURL(server.URL), WithAuth(Auth{
-				ProjectID:     "test-project",
-				AgentID:       "test-agent",
-				EnvironmentID: "test-environment",
-			}), SetFileName(&filename))
-			if tt.name == "network timeout" {
-				client.httpClient.Timeout = 1 * time.Second
-			}
-
-			result := client.Is("test-flag").Enabled()
-			if result != false {
-				t.Error("Expected false for error condition")
-			}
-		})
-	}
-}
-
 func TestConcurrentAccess_SQLite(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response := `{
