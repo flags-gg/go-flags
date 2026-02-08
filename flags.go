@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/bugfixes/go-bugfixes/logs"
-	"github.com/flags-gg/go-flags/cache"
-	"github.com/flags-gg/go-flags/flag"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/bugfixes/go-bugfixes/logs"
+	"github.com/flags-gg/go-flags/cache"
+	"github.com/flags-gg/go-flags/flag"
 )
 
 const (
@@ -38,6 +40,14 @@ type Client struct {
 	mutex        *sync.RWMutex
 	circuitState CircuitState
 	auth         Auth
+
+	// Async support
+	backgroundRefresh bool
+	cancel            context.CancelFunc
+	refreshInProgress atomic.Bool
+	refreshInterval   atomic.Int64
+	onError           func(error)
+	bgDone            chan struct{}
 }
 
 type CircuitState struct {
@@ -54,7 +64,6 @@ type Option func(*Client)
 
 func NewClient(opts ...Option) *Client {
 	c := cache.NewSystem()
-	c.SetContext(context.Background())
 
 	client := &Client{
 		baseURL: baseURL,
@@ -80,6 +89,15 @@ func NewClient(opts ...Option) *Client {
 	if err := c.CacheSystem.Init(); err != nil {
 		_ = logs.Errorf("failed to initialize database: %v", err)
 		return nil
+	}
+
+	client.refreshInterval.Store(60) // default interval
+
+	if client.backgroundRefresh {
+		ctx, cancel := context.WithCancel(context.Background())
+		client.cancel = cancel
+		client.bgDone = make(chan struct{})
+		go client.startBackgroundRefresh(ctx)
 	}
 
 	return client
@@ -110,6 +128,16 @@ func WithMemory() Option {
 		c.Cache.NewMemory()
 	}
 }
+func WithBackgroundRefresh() Option {
+	return func(c *Client) {
+		c.backgroundRefresh = true
+	}
+}
+func WithErrorHandler(fn func(error)) Option {
+	return func(c *Client) {
+		c.onError = fn
+	}
+}
 
 func (c *Client) Is(name string) *Flag {
 	return &Flag{
@@ -128,6 +156,46 @@ func (c *Client) List() ([]flag.FeatureFlag, error) {
 	return flags, nil
 }
 
+// Close stops the background refresh goroutine and waits for it to finish.
+func (c *Client) Close() {
+	if c.cancel != nil {
+		c.cancel()
+		<-c.bgDone
+	}
+}
+
+func (c *Client) startBackgroundRefresh(ctx context.Context) {
+	defer close(c.bgDone)
+
+	// Initial fetch
+	if err := c.refetch(); err != nil {
+		c.reportError(err)
+	}
+
+	interval := time.Duration(c.refreshInterval.Load()) * time.Second
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if err := c.refetch(); err != nil {
+				c.reportError(err)
+			}
+			interval = time.Duration(c.refreshInterval.Load()) * time.Second
+			timer.Reset(interval)
+		}
+	}
+}
+
+func (c *Client) reportError(err error) {
+	if err != nil && c.onError != nil {
+		c.onError(err)
+	}
+}
+
 // Enabled flag specific
 func (f *Flag) Enabled() bool {
 	return f.Client.isEnabled(f.Name)
@@ -136,7 +204,8 @@ func (f *Flag) Enabled() bool {
 func (c *Client) isEnabled(name string) bool {
 	name = strings.ToLower(name) // force to lowercase
 
-	if c.Cache.CacheSystem.ShouldRefreshCache() {
+	// In background mode, the goroutine handles refreshes — never block here
+	if !c.backgroundRefresh && c.Cache.CacheSystem.ShouldRefreshCache() {
 		if err := c.refetch(); err != nil {
 			_ = logs.Errorf("failed to refetch flags: %v", err)
 			return false
@@ -206,6 +275,12 @@ func (c *Client) fetchFlags() (*ApiResponse, error) {
 }
 
 func (c *Client) refetch() error {
+	// Deduplication: only one goroutine refreshes at a time
+	if !c.refreshInProgress.CompareAndSwap(false, true) {
+		return nil
+	}
+	defer c.refreshInProgress.Store(false)
+
 	if c.circuitState.isOpen {
 		if time.Since(c.circuitState.lastFailure) < 10*time.Second {
 			return nil
@@ -227,6 +302,7 @@ func (c *Client) refetch() error {
 		if c.circuitState.failureCount >= c.maxRetries {
 			c.circuitState.isOpen = true
 			c.circuitState.lastFailure = time.Now()
+			c.reportError(fmt.Errorf("circuit breaker opened after %d failures: %w", c.circuitState.failureCount, err))
 			return nil
 		}
 
@@ -235,6 +311,10 @@ func (c *Client) refetch() error {
 
 	if err != nil || apiResp == nil {
 		return logs.Errorf("failed to fetch flags: %v", err)
+	}
+
+	if apiResp.IntervalAllowed > 0 {
+		c.refreshInterval.Store(int64(apiResp.IntervalAllowed))
 	}
 
 	var flags []flag.FeatureFlag
@@ -254,6 +334,59 @@ func (c *Client) refetch() error {
 	}
 
 	return nil
+}
+
+// GetMultiple returns a map of flag names to their enabled status.
+func (c *Client) GetMultiple(names ...string) map[string]bool {
+	result := make(map[string]bool, len(names))
+
+	// Single refresh check for all flags
+	if !c.backgroundRefresh && c.Cache.CacheSystem.ShouldRefreshCache() {
+		if err := c.refetch(); err != nil {
+			_ = logs.Errorf("failed to refetch flags: %v", err)
+		}
+	}
+
+	localFlags := buildLocal()
+	for _, name := range names {
+		name = strings.ToLower(name)
+
+		if enabled, ok := localFlags[name]; ok {
+			result[name] = enabled
+			continue
+		}
+
+		enabled, exists := c.Cache.CacheSystem.Get(name)
+		if exists {
+			result[name] = enabled
+		} else {
+			result[name] = false
+		}
+	}
+
+	return result
+}
+
+// AllEnabled returns true if all named flags are enabled.
+func (c *Client) AllEnabled(names ...string) bool {
+	flags := c.GetMultiple(names...)
+	for _, enabled := range flags {
+		if !enabled {
+			return false
+		}
+	}
+	return true
+}
+
+// AnyEnabled returns true if any named flag is enabled.
+func (c *Client) AnyEnabled(names ...string) bool {
+	flags := c.GetMultiple(names...)
+	for _, enabled := range flags {
+		if enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func buildLocal() map[string]bool {

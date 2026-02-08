@@ -4,10 +4,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/bugfixes/go-bugfixes/logs"
 	"github.com/flags-gg/go-flags/flag"
 	_ "modernc.org/sqlite"
-	"time"
 )
 
 func getDBClient(db *sql.DB, fileName *string) (*sql.DB, error) {
@@ -95,13 +96,7 @@ func (s *SQLLite) Init() error {
 }
 
 func (s *SQLLite) deleteAllFlags() error {
-	db, err := getDBClient(s.DB, s.FileName)
-	if err != nil {
-		return logs.Errorf("failed to get database client: %v", err)
-	}
-	s.DB = db
-
-	tx, err := db.Begin()
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return logs.Errorf("failed to begin transaction: %v", err)
 	}
@@ -120,14 +115,8 @@ func (s *SQLLite) deleteAllFlags() error {
 }
 
 func (s *SQLLite) Get(name string) (bool, bool) {
-	db, err := getDBClient(s.DB, s.FileName)
-	if err != nil {
-		return false, false
-	}
-	s.DB = db
-
 	var enabled bool
-	if err := db.QueryRow(`SELECT enabled FROM flags WHERE name = $1 AND updated_at > (SELECT CAST(value AS INTEGER) FROM cache_metadata WHERE key = 'cache_ttl')`, name).Scan(&enabled); err != nil {
+	if err := s.DB.QueryRow(`SELECT enabled FROM flags WHERE name = $1 AND updated_at > (SELECT CAST(value AS INTEGER) FROM cache_metadata WHERE key = 'cache_ttl')`, name).Scan(&enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, false
 		}
@@ -137,20 +126,8 @@ func (s *SQLLite) Get(name string) (bool, bool) {
 }
 
 func (s *SQLLite) GetAll() ([]flag.FeatureFlag, error) {
-	db, err := getDBClient(s.DB, s.FileName)
-	if err != nil {
-		return nil, logs.Errorf("failed to get database client: %v", err)
-	}
-	s.DB = db
-
-	defer func() {
-		if err := db.Close(); err != nil {
-			_ = logs.Errorf("failed to close database: %v", err)
-		}
-	}()
-
 	var flags []flag.FeatureFlag
-	rows, err := db.Query(`SELECT name, enabled FROM flags`)
+	rows, err := s.DB.Query(`SELECT name, enabled FROM flags`)
 	if err != nil {
 		return nil, logs.Errorf("failed to query database: %v", err)
 	}
@@ -185,13 +162,7 @@ func (s *SQLLite) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
 		}
 	}
 
-	db, err := getDBClient(s.DB, s.FileName)
-	if err != nil {
-		return logs.Errorf("failed to get database client: %v", err)
-	}
-	s.DB = db
-
-	tx, err := db.Begin()
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return logs.Errorf("failed to begin transaction: %v", err)
 	}
@@ -219,14 +190,8 @@ func (s *SQLLite) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
 }
 
 func (s *SQLLite) ShouldRefreshCache() bool {
-	db, err := getDBClient(s.DB, s.FileName)
-	if err != nil {
-		return true
-	}
-	s.DB = db
-
 	var nextRefreshTime int64
-	if err := db.QueryRow(`SELECT CAST(value AS INTEGER) FROM cache_metadata WHERE key = 'next_refresh_time'`).Scan(&nextRefreshTime); err != nil {
+	if err := s.DB.QueryRow(`SELECT CAST(value AS INTEGER) FROM cache_metadata WHERE key = 'next_refresh_time'`).Scan(&nextRefreshTime); err != nil {
 		return true
 	}
 

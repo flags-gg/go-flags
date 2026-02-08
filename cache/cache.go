@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"context"
 	"github.com/flags-gg/go-flags/flag"
 )
 
@@ -18,8 +17,6 @@ type Cache struct {
 }
 
 type System struct {
-	Context context.Context
-
 	FileName *string
 	IsMemory bool
 
@@ -27,13 +24,7 @@ type System struct {
 }
 
 func NewSystem() *System {
-	return &System{
-		Context: context.Background(),
-	}
-}
-
-func (s *System) SetContext(ctx context.Context) {
-	s.Context = ctx
+	return &System{}
 }
 
 func (s *System) SetFileName(fileName *string) {

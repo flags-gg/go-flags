@@ -45,7 +45,11 @@ func (m *Memory) Refresh(flags []flag.FeatureFlag, intervalAllowed int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.Flags = sync.Map{}
+	// Clear existing entries without replacing the sync.Map struct
+	m.Flags.Range(func(key, _ interface{}) bool {
+		m.Flags.Delete(key)
+		return true
+	})
 	for _, f := range flags {
 		m.Flags.Store(f.Details.Name, f)
 	}
