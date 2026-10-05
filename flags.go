@@ -25,6 +25,11 @@ type Auth struct {
 	EnvironmentID string
 }
 
+// complete reports whether all IDs needed to call the flags.gg API are set.
+func (a Auth) complete() bool {
+	return a.ProjectID != "" && a.AgentID != "" && a.EnvironmentID != ""
+}
+
 type Flag struct {
 	Name   string
 	Client *Client
@@ -72,6 +77,9 @@ func NewClient(opts ...Option) *Client {
 
 	for _, opt := range opts {
 		opt(client)
+	}
+	if !client.auth.complete() {
+		logs.Warn("flags.gg auth not set: only FLAGS_* env overrides will be used")
 	}
 	if !c.IsMemory {
 		c.CacheSystem = cache.NewSQLLite(c.FileName)
@@ -136,18 +144,21 @@ func (f *Flag) Enabled() bool {
 func (c *Client) isEnabled(name string) bool {
 	name = strings.ToLower(name) // force to lowercase
 
+	// local env overrides win, so check them before touching the network
+	if enabled, ok := buildLocal()[name]; ok {
+		return enabled
+	}
+
+	// without credentials there's nothing remote to fetch: missing config isn't a
+	// transient failure, so don't retry, sleep or log on every check
+	if !c.auth.complete() {
+		return false
+	}
+
 	if c.Cache.CacheSystem.ShouldRefreshCache() {
 		if err := c.refetch(); err != nil {
 			_ = logs.Errorf("failed to refetch flags: %v", err)
 			return false
-		}
-	}
-
-	// check local
-	localFlags := buildLocal()
-	for lname, enabled := range localFlags {
-		if lname == name {
-			return enabled
 		}
 	}
 
