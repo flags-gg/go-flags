@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -91,5 +92,38 @@ func TestErrorHandling(t *testing.T) {
 				t.Error("Expected false for error condition")
 			}
 		})
+	}
+}
+
+func TestUnconfiguredAuth_LocalOnly(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("FLAGS_UNCONFIGURED_OVERRIDE", "true")
+
+	for name, auth := range map[string]Auth{
+		"empty":           {},
+		"missing env id":  {ProjectID: "p", AgentID: "a"},
+		"missing project": {AgentID: "a", EnvironmentID: "e"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := NewClient(WithBaseURL(server.URL), WithAuth(auth), WithMemory())
+			start := time.Now()
+			if !client.Is("unconfigured_override").Enabled() {
+				t.Error("env override should be honoured without auth")
+			}
+			if client.Is("unknown-flag").Enabled() {
+				t.Error("unknown flag should be false without auth")
+			}
+			if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+				t.Errorf("checks took %v, want no retry/sleep without auth", elapsed)
+			}
+		})
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("API called %d times without auth, want 0", n)
 	}
 }
